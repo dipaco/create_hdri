@@ -5,8 +5,8 @@ import numpy as np
 import sys
 from os import listdir
 from os.path import isfile, join, splitext
-from scipy.misc import imread
-from matplotlib.pyplot import plot, show, scatter, title, xlabel, ylabel
+from scipy.misc import imread, imsave
+from matplotlib.pyplot import plot, show, scatter, title, xlabel, ylabel, savefig
 from matplotlib.colors import rgb_to_hsv
 from scipy.sparse.linalg import spsolve
 
@@ -118,8 +118,9 @@ def create_radiance_map(imgs, G, delta_t, w):
     R = np.zeros(img_shape)
     W = np.zeros(img_shape, dtype=float)
     for dt in imgs:
+        print '[create_hdri] Processing image with dt = ', dt
         R += np.array([w_hat(z)*(G[z] - dt) for z in np.ravel(imgs[dt])]).reshape(img_shape)
-        W += np.array([w_hat(z) for z in np.ravel(imgs[dt])]).reshape(img_shape)
+        W += np.array([w_hat(z) + 1 for z in np.ravel(imgs[dt])]).reshape(img_shape)
 
     return np.exp(R / W)
 
@@ -137,7 +138,7 @@ if __name__=='__main__':
 
     #sampling
     channel = G_CHANNEL
-    num_samples = 150
+    num_samples = 250
     Z, B = get_samples(imgs_array, channel, num_samples)
     n, p = Z.shape
 
@@ -145,23 +146,27 @@ if __name__=='__main__':
     Zmin = 0.0      #np.amin(Z)
     Zmax = 255.0    #np.amax(Z)
     w_hat = lambda z: z - Zmin if z <= (Zmin + Zmax)/2 else Zmax - z
-    l = 550
+    l = 250
     G, E = fit_response(Z, B, l, w_hat)
 
     #creating radiance map for the channel
     print '[create_hdri] Creating radiance map (could take a while...)'
     R = create_radiance_map(imgs_array, G, B, w_hat)
 
-    output_filename = join(output_folder, 'output.hdr')
+    output_filename = join(output_folder, 'output.png')
     print '[create_hdri] Saving HDR image on: ', output_filename
-    write_hdr(output_filename, R)
+    #write_hdr(output_filename, R)
+    #Gamma compression
+    gamma = 0.5
+    imsave(output_filename, np.power(R, gamma))
 
-    #print '[create_hdri] Showing plot'
-    ##Creates a plot for the response curve
-    #plot(G, np.arange(256))
-    #title('RGB Response functions')
-    #xlabel('log exposure')
-    #ylabel('Z value')
+    print '[create_hdri] Showing plot'
+    #Creates a plot for the response curve
+    plot(G, np.arange(256))
+    title('RGB Response function')
+    xlabel('log exposure')
+    ylabel('Z value')
+    savefig(join(output_folder, 'response_curve.png'))
     #show()
 
     #tuning
