@@ -1,13 +1,12 @@
 #!/usr/bin/python
 
-import cv2.cv
 import numpy as np
 import sys
 from os import listdir
 from os.path import isfile, join, splitext
 from scipy.misc import imread, imsave
 from matplotlib.pyplot import plot, show, scatter, title, xlabel, ylabel, savefig
-from matplotlib.colors import rgb_to_hsv
+from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
 from scipy.sparse.linalg import spsolve
 
 def read_images(path):
@@ -23,6 +22,34 @@ def read_images(path):
         imgs[shutter_time] = imread(join(path, f))
 
     return imgs
+
+'''
+Save a Numpy array to a PFM file.
+'''
+def save_pfm(filename, image, scale=1):
+    color = None
+    file = open(filename, "wb")
+    if image.dtype.name != 'float32':
+        raise Exception('Image dtype must be float32.')
+
+    if len(image.shape) == 3 and image.shape[2] == 3: # color image
+        color = True
+    elif len(image.shape) == 2 or len(image.shape) == 3 and image.shape[2] == 1: # greyscale
+        color = False
+    else:
+        raise Exception('Image must have H x W x 3, H x W x 1 or H x W dimensions.')
+
+    file.write('PF\n' if color else 'Pf\n')
+    file.write('%d %d\n' % (image.shape[1], image.shape[0]))
+
+    endian = image.dtype.byteorder
+
+    if endian == '<' or endian == '=' and sys.byteorder == 'little':
+        scale = -scale
+
+    file.write('%f\n' % scale)
+
+    image.tofile(file)
 
 def get_samples(imgs_array, channel, num_points):
     '''Desc'''
@@ -110,7 +137,7 @@ def write_hdr(filename, image):
     rgbe.flatten().tofile(f)
     f.close()
 
-def create_radiance_map(imgs, G, delta_t, w):
+def create_radiance_map(imgs, G, w):
     '''Desc'''
 
     img_shape = imgs[imgs.keys()[0]].shape
@@ -119,10 +146,26 @@ def create_radiance_map(imgs, G, delta_t, w):
     W = np.zeros(img_shape, dtype=float)
     for dt in imgs:
         print '[create_hdri] Processing image with dt = ', dt
-        R += np.array([w_hat(z)*(G[z] - dt) for z in np.ravel(imgs[dt])]).reshape(img_shape)
-        W += np.array([w_hat(z) + 1 for z in np.ravel(imgs[dt])]).reshape(img_shape)
+        R += np.array([w(z)*(G[z] - dt) for z in np.ravel(imgs[dt])]).reshape(img_shape)
+        W += np.array([w(z) for z in np.ravel(imgs[dt])]).reshape(img_shape)
 
     return np.exp(R / W)
+
+def tonemap(R, filename):
+    '''
+        convert R in range rmin to rmax to the range 0..240 degrees which
+        correspond to the colors red..blue in the HSV colorspace
+        lower values will have the value 0 and greater values will have
+        the value 240. Then convert hsv color (h,1,1) to its rgb equivalent
+        note: the hsv_to_rgb() function expects h to be in the range 0..1 not 0..360
+    '''
+    rmax = np.amax(R)
+    rmin = np.amin(R)
+    H = 240 * (rmax - R) / (rmax - rmin)
+    TM_aux = np.ones(R.shape + (3,), dtype=float)
+    TM_aux[:, :, 0] = H / 360
+
+    return hsv_to_rgb(TM_aux)
 
 if __name__=='__main__':
 
@@ -138,20 +181,28 @@ if __name__=='__main__':
 
     #sampling
     channel = G_CHANNEL
-    num_samples = 250
+    num_samples = 450
     Z, B = get_samples(imgs_array, channel, num_samples)
     n, p = Z.shape
 
     #least squares
     Zmin = 0.0      #np.amin(Z)
     Zmax = 255.0    #np.amax(Z)
-    w_hat = lambda z: z - Zmin if z <= (Zmin + Zmax)/2 else Zmax - z
-    l = 250
+    w_hat = lambda z: z - Zmin + 1 if z <= (Zmin + Zmax)/2 else Zmax - z + 1
+    l = 550
     G, E = fit_response(Z, B, l, w_hat)
 
     #creating radiance map for the channel
     print '[create_hdri] Creating radiance map (could take a while...)'
-    R = create_radiance_map(imgs_array, G, B, w_hat)
+    R = create_radiance_map(imgs_array, G, w_hat)
+
+    #write_hdr(join(output_folder, 'hdr.hdr'), R)
+    save_pfm(join(output_folder, 'pfm.pfm'), np.float32(R))
+
+    tonemap_filename = join(output_folder, 'tonemap.png')
+    print '[create_hdri] Saving Tonempa for the scene on: ', tonemap_filename
+    TM = tonemap(R[:, :, channel], tonemap_filename)
+    imsave(tonemap_filename, TM)
 
     output_filename = join(output_folder, 'output.png')
     print '[create_hdri] Saving HDR image on: ', output_filename
@@ -160,7 +211,7 @@ if __name__=='__main__':
     gamma = 0.5
     imsave(output_filename, np.power(R, gamma))
 
-    print '[create_hdri] Showing plot'
+    print '[create_hdri] Creating response function plot'
     #Creates a plot for the response curve
     plot(G, np.arange(256))
     title('RGB Response function')
