@@ -107,7 +107,7 @@ def fit_response(Z, B, l, w):
             w_value = w(z_value)
             A[k, z_value] = w_value
             A[k, num_gray_levels + i] = -w_value
-            b[k, 0] = w_value*B[j]
+            b[k, 0] = w_value * np.log(B[j])
             k += 1
 
     #Setting the middle value of the G function as '0'
@@ -155,7 +155,7 @@ def create_radiance_map(imgs, G, w):
     #returns a function to calculate the Radiance of a associated
     #to an intensity value
     def map_z_values(exposure_time):
-        return np.vectorize(lambda z: G[z] - exposure_time)
+        return np.vectorize(lambda z: G[z] - np.log(exposure_time))
 
     #vector form of weighting function
     get_w_values = np.vectorize(w)
@@ -170,7 +170,7 @@ def create_radiance_map(imgs, G, w):
         R += W_aux * (map_z_values(dt))(imgs[dt]).reshape(img_shape)
         W += W_aux
 
-    return np.exp(R / W)
+    return R / W
 
 def tonemap(R):
     '''
@@ -193,21 +193,21 @@ if __name__=='__main__':
     #Print some (hopefully) useful documentation
     if ( len(sys.argv) != 3 ):
         print   'Usage: ' + APP_NAME + ' <input_folder> <output_folder>\n' \
-                '<input_folder -> Directory containing only images. Each one has to be named as follows:\n' \
-                '                 t<time_exposure_1>.png\n' \
-                '                 t<time_exposure_2>.jpg\n' \
-                '                 t<time_exposure_3>.png\n' \
-                '                 ...\n' \
+                '<input_folder> ->  Directory containing only images. Each one has to be named as follows:\n' \
+                '                   t<time_exposure_1>.png\n' \
+                '                   t<time_exposure_2>.jpg\n' \
+                '                   t<time_exposure_3>.png\n' \
+                '                   ...\n' \
                 '\n' \
-                '                 <time_exposure> has to be in seconds.\n' \
+                '                   <time_exposure> has to be in seconds.\n' \
                 '\n' \
                 '<output_folder> -> Directoy to store the results. HDR image, PFM image, Radiance map,\n' \
                 'PNG file, and the fitted curve for log exposure.\n'
         exit(-1)
 
-    R_CHANNEL = 0
-    G_CHANNEL = 1
-    B_CHANNEL = 2
+    L_CHANNEL = 0
+    a_CHANNEL = 1
+    b_CHANNEL = 2
 
     input_folder = sys.argv[1]
     output_folder = sys.argv[2]
@@ -216,21 +216,24 @@ if __name__=='__main__':
     imgs_array = read_images(input_folder)
 
     #sampling
-    channel = G_CHANNEL
-    num_samples = 650
+    channel = L_CHANNEL
+    num_samples = 1500.0 / len(imgs_array.keys())
     Z, B = get_samples(imgs_array, channel, num_samples)
     n, p = Z.shape
 
-    #least squares
+    #Fitting the curve
     Zmin = 0.0      #np.amin(Z)
     Zmax = 255.0    #np.amax(Z)
     w_hat = lambda z: z - Zmin + 1 if z <= (Zmin + Zmax)/2 else Zmax - z + 1
     l = 550
+    print APP_PREFIX + 'Fitting log exposure curve...'
     G, E = fit_response(Z, B, l, w_hat)
 
     #creating radiance map for the channel
     print APP_PREFIX + 'Creating radiance map (could take a while...)'
-    R = create_radiance_map(imgs_array, G, w_hat)
+    relative_R = create_radiance_map(imgs_array, G, w_hat)
+    R = np.exp(relative_R)
+
 
     tonemap_filename = join(output_folder, 'tonemap.png')
     hdr_filename = join(output_folder, 'output.hdr')
@@ -240,12 +243,12 @@ if __name__=='__main__':
     write_hdr(hdr_filename, R)
     print APP_PREFIX + 'Saving PFM image on: ', pfm_filename
     save_pfm(pfm_filename, np.float32(R))
-    print APP_PREFIX + 'Saving Tonempa for the scene on: ', tonemap_filename
-    imsave(tonemap_filename, tonemap(R[:, :, channel]))
+    print APP_PREFIX + 'Saving Tonemap for the scene on: ', tonemap_filename
+    imsave(tonemap_filename, tonemap(relative_R[:, :, channel]))
     print APP_PREFIX + 'Saving HDR image on: ', png_filename
     #Gamma compression
     gamma = 0.5
-    imsave(png_filename, np.power(R, gamma))
+    imsave(png_filename, np.power(relative_R, gamma))
 
     print APP_PREFIX + 'Creating and saving response function plot'
     #Creates a plot for the response curve
